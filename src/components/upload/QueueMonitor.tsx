@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, memo, useMemo, useCallback } from "react";
 import { Activity, CheckCircle2, XCircle, Loader2, RefreshCw, User, Pause, Play, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +46,9 @@ const stringifyBatchValue = (value: unknown): string => {
 
 type TabKey = "active" | "failed" | "success";
 
+const REFRESH_COOLDOWN_MS = 2 * 60 * 1000;
+const REFRESH_OVERRIDE_PIN = "123456";
+
 function QueueMonitorInner() {
   const { isAdmin, loading: adminAuthLoading } = useAdminAuth();
   const { user } = useAuth();
@@ -54,11 +57,11 @@ function QueueMonitorInner() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
   const [processingId, setProcessingId] = useState<string | null>(null);
-
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const fetchBatches = useCallback(
-    async (silent = false) => {
+    async (silent = false, startCooldown = false) => {
       if (!silent) setLoading(true);
       try {
         if (!isAdmin && !user?.id) {
@@ -108,6 +111,11 @@ function QueueMonitorInner() {
             user_email: userMap.get(b.user_id) || undefined,
           })),
         );
+        if (startCooldown) {
+          const nextNow = Date.now();
+          setNowMs(nextNow);
+          setRefreshCooldownUntil(nextNow + REFRESH_COOLDOWN_MS);
+        }
       } catch (e) {
         console.error("Failed to fetch batches:", e);
       } finally {
@@ -119,13 +127,34 @@ function QueueMonitorInner() {
 
   useEffect(() => {
     if (adminAuthLoading) return;
-    fetchBatches();
+    fetchBatches(false, true);
   }, [adminAuthLoading, fetchBatches]);
 
   // Queue data is intentionally manual-refresh only. Automatic polling here
   // caused network/state updates while a CSV push was running and made users
   // think the whole upload page had reloaded. The refresh button below updates
   // this card only.
+  useEffect(() => {
+    if (refreshCooldownUntil <= Date.now()) return;
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [refreshCooldownUntil]);
+
+  const refreshRemainingSeconds = Math.max(0, Math.ceil((refreshCooldownUntil - nowMs) / 1000));
+
+  const handleManualRefresh = useCallback(() => {
+    if (refreshRemainingSeconds > 0) {
+      const pin = window.prompt(`Refresh is available in ${refreshRemainingSeconds}s. Enter PIN to override.`);
+      if (pin !== REFRESH_OVERRIDE_PIN) {
+        if (pin !== null) {
+          toast({ title: "Invalid PIN", description: "Refresh was not run.", variant: "destructive" });
+        }
+        return;
+      }
+    }
+
+    fetchBatches(false, true);
+  }, [fetchBatches, refreshRemainingSeconds, toast]);
 
   const { activeBatches, failedBatches, successBatches } = useMemo(() => {
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -243,8 +272,9 @@ function QueueMonitorInner() {
               </Badge>
             )}
           </CardTitle>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => fetchBatches()}>
+          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={handleManualRefresh}>
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            {refreshRemainingSeconds > 0 && <span className="text-[11px] tabular-nums">{refreshRemainingSeconds}s</span>}
           </Button>
         </div>
       </CardHeader>
