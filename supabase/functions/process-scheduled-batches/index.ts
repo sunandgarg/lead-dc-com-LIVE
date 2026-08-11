@@ -364,10 +364,10 @@ async function processOneLead(
       });
       formData[fieldMappings["medium"] || "medium"] = leadData.leadMedium || apiConfig.medium;
       formData[fieldMappings["campaign"] || "campaign"] = leadData.leadCampaign || apiConfig.campaign;
-      formData.college_id = apiConfig.collegeId;
       formData[fieldMappings["source"] || "source"] = leadData.leadSource || apiConfig.source;
-      formData.secret_key = apiConfig.secretKey;
       Object.entries(staticFields).forEach(([key, value]) => { formData[key] = value; });
+      if (apiConfig.collegeId) formData.college_id = apiConfig.collegeId;
+      if (apiConfig.secretKey) formData.secret_key = apiConfig.secretKey;
       normalizeMerittoNoPaperFormsPayload(formData, apiConfig);
       payload = formData;
     } else {

@@ -200,7 +200,6 @@ serve(async (req) => {
         }));
     } else if (apiConfig.apiType === 'meritto' || apiConfig.apiType === 'nopaperforms') {
       const formData: Record<string, string> = {
-        secret_key: apiConfig.secretKey,
         source: apiConfig.source,
         medium: apiConfig.medium,
         campaign: apiConfig.campaign,
@@ -213,6 +212,9 @@ serve(async (req) => {
           formData[normalizedKey] = value;
         }
       });
+
+      if (apiConfig.collegeId) formData.college_id = apiConfig.collegeId;
+      if (apiConfig.secretKey) formData.secret_key = apiConfig.secretKey;
 
       payload = formData;
     } else {

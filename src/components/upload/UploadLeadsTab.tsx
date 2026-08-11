@@ -1218,7 +1218,6 @@ export function UploadLeadsTab({
 
     if (apiType === "meritto" || apiType === "nopaperforms") {
       const payload: Record<string, string> = {
-        secret_key: selectedUniversity.secret_key ? "[hidden]" : "",
         source: lead.leadSource?.trim() || selectedUniversity.source,
         medium: lead.leadMedium?.trim() || selectedUniversity.medium,
         campaign: lead.leadCampaign?.trim() || selectedUniversity.campaign,
@@ -1247,9 +1246,8 @@ export function UploadLeadsTab({
         }
       });
 
-      if (selectedUniversity.college_id && !payload.college_id) {
-        payload.college_id = selectedUniversity.college_id;
-      }
+      if (selectedUniversity.college_id) payload.college_id = selectedUniversity.college_id;
+      if (selectedUniversity.secret_key) payload.secret_key = "[hidden]";
       normalizeMerittoNoPaperFormsPayload(payload);
 
       return JSON.stringify(payload, null, 2);

@@ -46,6 +46,8 @@ interface LeadPayload {
   };
 }
 
+type ApiConfig = LeadPayload["apiConfig"];
+
 // Do not automatically retry partner POSTs: a timed-out request may already
 // have been accepted, and retrying adds delay plus duplicate risk. Users can
 // explicitly retry failed rows after reviewing the response.
@@ -130,7 +132,8 @@ function canonicalizeField(payload: Record<string, string>, canonicalKey: string
 }
 
 function normalizeMerittoNoPaperFormsPayload(payload: Record<string, string>, apiConfig: LeadPayload["apiConfig"]) {
-  if (apiConfig.collegeId && !payload.college_id) payload.college_id = apiConfig.collegeId;
+  if (apiConfig.collegeId) payload.college_id = apiConfig.collegeId;
+  if (apiConfig.secretKey) payload.secret_key = apiConfig.secretKey;
   addFirstAvailableAlias(payload, FIELD_ALIASES.campus);
   canonicalizeField(payload, "course", ["Course"]);
   canonicalizeField(payload, "specialization", [
@@ -254,6 +257,60 @@ function parseJsonLike<T>(value: unknown, fallback: T): T {
   }
 
   return (value as T) ?? fallback;
+}
+
+function hasMeaningfulConfigValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (value == null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+async function hydrateApiConfig(universityId: string, apiConfig: ApiConfig): Promise<ApiConfig> {
+  const needsHydration =
+    !hasMeaningfulConfigValue(apiConfig.secretKey) ||
+    !hasMeaningfulConfigValue(apiConfig.columnMapping) ||
+    !hasMeaningfulConfigValue(apiConfig.authType) ||
+    !hasMeaningfulConfigValue(apiConfig.customHeaders);
+
+  if (!universityId || !needsHydration) return apiConfig;
+
+  const { data, error } = await supabase
+    .from("universities")
+    .select(
+      "api_url,college_id,secret_key,source,medium,campaign,api_type,column_mapping,payload_wrapper,auth_type,auth_header_key,auth_header_value,custom_headers,default_values,api_timeout_seconds",
+    )
+    .eq("id", universityId)
+    .maybeSingle();
+
+  if (error || !data) {
+    console.error("Could not hydrate university API config:", error || "University not found");
+    return apiConfig;
+  }
+
+  return {
+    apiUrl: apiConfig.apiUrl || String(data.api_url || ""),
+    secretKey: apiConfig.secretKey || String(data.secret_key || ""),
+    collegeId: apiConfig.collegeId || String(data.college_id || ""),
+    source: apiConfig.source || String(data.source || ""),
+    medium: apiConfig.medium || String(data.medium || ""),
+    campaign: apiConfig.campaign || String(data.campaign || ""),
+    apiType: apiConfig.apiType || String(data.api_type || "generic"),
+    columnMapping: hasMeaningfulConfigValue(apiConfig.columnMapping) ? apiConfig.columnMapping : normalizeStringRecord(data.column_mapping),
+    customColumnMapping: apiConfig.customColumnMapping || {},
+    payloadWrapper: apiConfig.payloadWrapper || String(data.payload_wrapper || "object"),
+    authType: apiConfig.authType || String(data.auth_type || "secret_key"),
+    authHeaderKey: apiConfig.authHeaderKey || String(data.auth_header_key || ""),
+    authHeaderValue: apiConfig.authHeaderValue || String(data.auth_header_value || ""),
+    customHeaders: hasMeaningfulConfigValue(apiConfig.customHeaders) ? apiConfig.customHeaders : normalizeStringRecord(data.custom_headers),
+    universityDefaults:
+      hasMeaningfulConfigValue(apiConfig.universityDefaults) ? apiConfig.universityDefaults : normalizeStringRecord(data.default_values),
+    apiTimeoutSeconds:
+      typeof apiConfig.apiTimeoutSeconds === "number" && Number.isFinite(apiConfig.apiTimeoutSeconds)
+        ? apiConfig.apiTimeoutSeconds
+        : Number(data.api_timeout_seconds || 0) || undefined,
+  };
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
@@ -408,7 +465,8 @@ async function processOne(
   input: LeadPayload,
   options: { skipGuards?: boolean; skipPersistence?: boolean } = {},
 ): Promise<{ success: boolean; status: string; response: string; httpStatus: number }> {
-  const { batchId, leadData, apiConfig, universityId, sourceLabel } = input;
+  const { batchId, leadData, universityId, sourceLabel } = input;
+  const apiConfig = await hydrateApiConfig(universityId, input.apiConfig);
   const srcLabel = (sourceLabel || "").trim();
 
   // Every caller must honour Pause/Stop, including legacy single-lead
