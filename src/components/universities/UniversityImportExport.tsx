@@ -1,8 +1,9 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useState } from 'react';
 import { Download, Upload, FileJson } from 'lucide-react';
 import { PayloadField, columnMappingToPayloadFields } from './PayloadFieldsEditor';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 interface StateCity {
   state: string;
@@ -56,6 +57,9 @@ export interface UniversityExportData {
   defaultValues?: Record<string, any>;
   status?: string;
   daily_lead_limit?: number | null;
+  universityApiKeys?: unknown[];
+  multiPushDefaults?: unknown[];
+  relatedRecords?: Record<string, unknown[]>;
 }
 
 // Wrapped export format (single)
@@ -71,6 +75,118 @@ export interface BulkUniversityExport {
   exportedAt: string;
   count: number;
   universities: UniversityExportData[];
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function throwQueryError(label: string, error: unknown) {
+  if (error) throw new Error(`Failed to load ${label}: ${errorMessage(error, String(error))}`);
+}
+
+type UniversityExportSource = Record<string, unknown> & { id?: string; name?: string };
+
+/**
+ * Export-time hydration. The normal universities list intentionally excludes
+ * secrets and other heavy fields, so exports must read the authoritative rows.
+ */
+export async function fetchCompleteUniversitiesForExport(
+  universities: UniversityExportSource[],
+): Promise<UniversityExportSource[]> {
+  const requested = universities.filter(Boolean);
+  const ids = Array.from(new Set(requested.map((university) => university.id).filter(Boolean)));
+  if (ids.length === 0) return requested;
+
+  const [universitiesRes, programsRes, stateCitiesRes, coursesRes, columnsRes, apiKeysRes, defaultsRes] =
+    await Promise.all([
+      supabase.from('universities').select('*').in('id', ids),
+      supabase.from('programs').select('*').in('university_id', ids),
+      supabase.from('state_cities').select('*').in('university_id', ids),
+      supabase.from('course_specializations').select('*').in('university_id', ids),
+      supabase.from('custom_columns').select('*').in('university_id', ids).order('sort_order'),
+      supabase.from('university_api_keys').select('*').in('university_id', ids),
+      supabase.from('multi_push_university_defaults').select('*').in('university_id', ids),
+    ]);
+
+  throwQueryError('university configuration', universitiesRes.error);
+  throwQueryError('programs', programsRes.error);
+  throwQueryError('state/city mappings', stateCitiesRes.error);
+  throwQueryError('course/specialization mappings', coursesRes.error);
+  throwQueryError('custom columns', columnsRes.error);
+  throwQueryError('university API keys', apiKeysRes.error);
+  throwQueryError('multi-push defaults', defaultsRes.error);
+
+  const columnIds = (columnsRes.data || []).map((column) => column.id);
+  const valuesRes = columnIds.length > 0
+    ? await supabase.from('custom_column_values').select('*').in('column_id', columnIds)
+    : { data: [], error: null };
+  throwQueryError('custom column values', valuesRes.error);
+
+  const rowById = new Map((universitiesRes.data || []).map((row) => [row.id, row]));
+  const valueById = new Map((valuesRes.data || []).map((value) => [value.id, value.value]));
+  const forUniversity = <T extends { university_id: string }>(rows: T[] | null, id: string) =>
+    (rows || []).filter((row) => row.university_id === id);
+
+  return requested.map((provided) => {
+    const row = rowById.get(provided.id);
+    if (!row) throw new Error(`University ${provided.name || provided.id} was not found`);
+
+    // Preserve unsaved scalar edits when exporting from the edit modal, while
+    // always sourcing related collections from their authoritative tables.
+    const {
+      programs: _programs,
+      stateCities: _stateCities,
+      courseSpecializations: _courseSpecializations,
+      customColumns: _customColumns,
+      universityApiKeys: _universityApiKeys,
+      multiPushDefaults: _multiPushDefaults,
+      relatedRecords: _relatedRecords,
+      ...providedScalars
+    } = provided;
+
+    const programRows = forUniversity(programsRes.data, provided.id);
+    const stateCityRows = forUniversity(stateCitiesRes.data, provided.id);
+    const courseRows = forUniversity(coursesRes.data, provided.id);
+    const columnRows = forUniversity(columnsRes.data, provided.id);
+    const apiKeyRows = forUniversity(apiKeysRes.data, provided.id);
+    const defaultRows = forUniversity(defaultsRes.data, provided.id);
+    const columnIdSet = new Set(columnRows.map((column) => column.id));
+    const columnValueRows = (valuesRes.data || []).filter((value) => columnIdSet.has(value.column_id));
+
+    const customColumns = columnRows.map((column) => ({
+      columnKey: column.column_key,
+      columnName: column.column_name,
+      isRequired: !!column.is_required,
+      sortOrder: column.sort_order ?? 0,
+      values: columnValueRows
+        .filter((value) => value.column_id === column.id)
+        .map((value) => ({
+          value: value.value,
+          parentValue: value.parent_value_id ? valueById.get(value.parent_value_id) : undefined,
+        })),
+    }));
+
+    return {
+      ...row,
+      ...providedScalars,
+      programs: programRows.map((program) => program.name),
+      stateCities: stateCityRows.map(({ state, city }) => ({ state, city })),
+      courseSpecializations: courseRows.map(({ course, specialization }) => ({ course, specialization })),
+      customColumns,
+      universityApiKeys: apiKeyRows,
+      multiPushDefaults: defaultRows,
+      relatedRecords: {
+        programs: programRows,
+        stateCities: stateCityRows,
+        courseSpecializations: courseRows,
+        customColumns: columnRows,
+        customColumnValues: columnValueRows,
+        universityApiKeys: apiKeyRows,
+        multiPushDefaults: defaultRows,
+      },
+    };
+  });
 }
 
 /** Convert a DB-shaped university object to the canonical export shape */
@@ -190,17 +306,26 @@ interface UniversityImportExportProps {
 export function UniversityImportExport({ university, onImport, mode }: UniversityImportExportProps) {
   const importRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const [isExporting, setIsExporting] = useState(false);
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!university) return;
-    const exportData: UniversityExport = {
-      version: '1.0',
-      exportedAt: new Date().toISOString(),
-      university: universityToExportData(university),
-    };
-    const safeName = university.name?.replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'university';
-    downloadJSON(exportData, `${safeName}_config.json`);
-    toast({ title: 'Exported', description: `Configuration for ${university.name} downloaded (including secrets)` });
+    setIsExporting(true);
+    try {
+      const [completeUniversity] = await fetchCompleteUniversitiesForExport([university]);
+      const exportData: UniversityExport = {
+        version: '2.0',
+        exportedAt: new Date().toISOString(),
+        university: universityToExportData(completeUniversity),
+      };
+      const safeName = university.name?.replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'university';
+      downloadJSON(exportData, `${safeName}_config.json`);
+      toast({ title: 'Exported', description: `Complete configuration for ${university.name} downloaded (including secrets)` });
+    } catch (error: unknown) {
+      toast({ title: 'Export Failed', description: errorMessage(error, 'Could not load the complete configuration'), variant: 'destructive' });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -229,11 +354,12 @@ export function UniversityImportExport({ university, onImport, mode }: Universit
         <button
           type="button"
           onClick={handleExport}
+          disabled={isExporting}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export university configuration as JSON (includes secrets)"
         >
           <Download className="h-4 w-4" />
-          Export
+          {isExporting ? 'Exporting...' : 'Export'}
         </button>
       )}
 
@@ -306,17 +432,26 @@ interface BulkImportExportProps {
 export function BulkImportExport({ universities, onBulkImport }: BulkImportExportProps) {
   const importRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const [isExporting, setIsExporting] = useState(false);
 
-  const handleExportAll = useCallback(() => {
+  const handleExportAll = useCallback(async () => {
     if (!universities.length) return;
-    const exportData: BulkUniversityExport = {
-      version: '1.0',
-      exportedAt: new Date().toISOString(),
-      count: universities.length,
-      universities: universities.map(universityToExportData),
-    };
-    downloadJSON(exportData, `all_universities_${new Date().toISOString().split('T')[0]}.json`);
-    toast({ title: 'Bulk Export Complete', description: `${universities.length} university configs exported (including secrets)` });
+    setIsExporting(true);
+    try {
+      const completeUniversities = await fetchCompleteUniversitiesForExport(universities);
+      const exportData: BulkUniversityExport = {
+        version: '2.0',
+        exportedAt: new Date().toISOString(),
+        count: completeUniversities.length,
+        universities: completeUniversities.map(universityToExportData),
+      };
+      downloadJSON(exportData, `all_universities_${new Date().toISOString().split('T')[0]}.json`);
+      toast({ title: 'Bulk Export Complete', description: `${completeUniversities.length} complete university configs exported (including secrets)` });
+    } catch (error: unknown) {
+      toast({ title: 'Export Failed', description: errorMessage(error, 'Could not load complete university configurations'), variant: 'destructive' });
+    } finally {
+      setIsExporting(false);
+    }
   }, [universities, toast]);
 
   const handleBulkImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -348,9 +483,9 @@ export function BulkImportExport({ universities, onBulkImport }: BulkImportExpor
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="outline" size="sm" onClick={handleExportAll} className="gap-2">
+      <Button variant="outline" size="sm" onClick={handleExportAll} disabled={isExporting} className="gap-2">
         <Download className="h-4 w-4" />
-        Export All ({universities.length})
+        {isExporting ? 'Exporting...' : `Export All (${universities.length})`}
       </Button>
       {onBulkImport && (
         <>
