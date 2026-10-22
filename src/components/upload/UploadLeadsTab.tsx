@@ -1065,7 +1065,7 @@ export function UploadLeadsTab({
         let value = "";
         if (field.sourceType === "lead_data") {
           const sourceKey = field.sourceKey?.trim() || field.fieldName;
-          value = readPreviewLeadValue(lead, sourceKey, field.fieldName);
+          value = readPreviewLeadValue(lead, field.fieldName, sourceKey);
         } else if (field.sourceType === "static") {
           value = field.staticValue || "";
         } else if (field.sourceType === "dynamic") {
