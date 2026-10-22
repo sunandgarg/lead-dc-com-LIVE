@@ -470,7 +470,9 @@ function getPayloadTargetForHeader(header: string, columnMapping: Record<string,
       .filter(Boolean)
       .some((value) => normalizeMappingToken(value) === normalizedHeader);
   });
-  return field ? field.sourceKey?.trim() || field.fieldName?.trim() || "" : "";
+  if (!field) return "";
+  if (normalizeMappingToken(field.sourceKey) === normalizedHeader) return field.sourceKey?.trim() || "";
+  return field.fieldName?.trim() || field.sourceKey?.trim() || "";
 }
 
 function purgeStorageEntries(storage: Storage, keys: Set<string>, prefixes: string[]) {
@@ -3016,7 +3018,7 @@ export function UploadLeadsTab({
                 const payloadFieldOptions = getPayloadFieldDefinitions(selectedUniversity.column_mapping || {})
                   .filter((field) => !field.sourceType || field.sourceType === "lead_data")
                   .map((field) => ({
-                    value: field.sourceKey?.trim() || field.fieldName?.trim() || "",
+                    value: field.fieldName?.trim() || field.sourceKey?.trim() || "",
                     label: field.displayName?.trim() || field.fieldName?.trim() || field.sourceKey?.trim() || "",
                   }))
                   .filter((option) => option.value);
