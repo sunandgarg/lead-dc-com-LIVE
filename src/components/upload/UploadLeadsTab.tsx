@@ -1975,6 +1975,21 @@ export function UploadLeadsTab({
         customColumnApiMapping[col.columnKey] = col.apiFieldName;
       }
     });
+    const selectedTargets = new Set(Object.values(tempColumnMapping).map(normalizeMappingToken).filter(Boolean));
+    const columnMapping = Object.fromEntries(
+      Object.entries(selectedUniversity.column_mapping || {}).map(([key, value]) => {
+        if (!key.startsWith("__field_") || !value) return [key, value];
+        try {
+          const field = JSON.parse(value) as PayloadFieldDefinition;
+          if (field.sourceType === "lead_data" && selectedTargets.has(normalizeMappingToken(field.fieldName))) {
+            return [key, JSON.stringify({ ...field, sourceKey: field.fieldName })];
+          }
+        } catch {
+          // Keep malformed legacy configuration unchanged; the Edge Function handles its fallback.
+        }
+        return [key, value];
+      }),
+    );
 
     return {
       apiUrl: selectedUniversity.api_url,
@@ -1984,7 +1999,7 @@ export function UploadLeadsTab({
       medium: selectedUniversity.medium,
       campaign: selectedUniversity.campaign,
       apiType: selectedUniversity.api_type || "nopaperforms",
-      columnMapping: selectedUniversity.column_mapping || {},
+      columnMapping,
       customColumnMapping: customColumnApiMapping,
       payloadWrapper: selectedUniversity.payload_wrapper || "object",
       authType: selectedUniversity.auth_type || "secret_key",
@@ -1995,7 +2010,7 @@ export function UploadLeadsTab({
         clampUniversityNumber(selectedUniversity.api_timeout_seconds, 30, 5, 300),
       universityDefaults: {},
     };
-  }, [selectedUniversity]);
+  }, [selectedUniversity, tempColumnMapping]);
 
   // Direct edge function call - no leads table insert
   const processLead = async (
