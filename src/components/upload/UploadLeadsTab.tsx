@@ -34,6 +34,7 @@ import { Alert } from "../Alert";
 import { supabase } from "@/integrations/supabase/client";
 import { useUploadStatePersistence } from "@/hooks/useUploadStatePersistence";
 import { appCache } from "@/hooks/useAppCache";
+import { isMappedCanonicalDuplicate } from "../../../supabase/functions/_shared/canonicalPayload";
 
 interface CustomColumn {
   columnKey: string;
@@ -133,6 +134,7 @@ function clampUniversityNumber(value: unknown, fallback: number, minimum: number
 
 interface University {
   id: string;
+  detailsLoaded?: boolean;
   name: string;
   api_url: string;
   college_id: string;
@@ -299,6 +301,9 @@ function normalizeUniversityRecord(raw: any): University {
 
   return {
     ...raw,
+    detailsLoaded: raw?.detailsLoaded ?? (
+      raw != null && "column_mapping" in raw && "secret_key" in raw && "default_values" in raw
+    ),
     name: String(raw?.name ?? "Unnamed University"),
     api_url: String(raw?.api_url ?? ""),
     college_id: String(raw?.college_id ?? ""),
@@ -522,12 +527,16 @@ export function UploadLeadsTab({
   const { state: persistedState, processing: persistedProcessing } = persistence;
 
   const [selectedUniversity, setSelectedUniversityState] = useState<University | null>(() => {
+    if (initialSelectedUniversity && (!persistedState.selectedUniversityId || initialSelectedUniversity.id === persistedState.selectedUniversityId)) {
+      return normalizeUniversityRecord(initialSelectedUniversity);
+    }
     if (persistedState.selectedUniversityId) {
       const found = safeUniversities.find((u) => u.id === persistedState.selectedUniversityId);
       if (found) return found;
     }
     return initialSelectedUniversity ? normalizeUniversityRecord(initialSelectedUniversity) : null;
   });
+  const requestedDetailsRef = useRef<string | null>(null);
 
   const leads = persistedState.leads;
   const fileName = persistedState.fileName;
@@ -624,8 +633,23 @@ export function UploadLeadsTab({
     const preferredId = initialSelectedUniversity?.id || persistedState.selectedUniversityId;
     if (!preferredId) return;
     const freshUniversity = safeUniversities.find((university) => university.id === preferredId);
-    if (freshUniversity) setSelectedUniversityState(freshUniversity);
-  }, [initialSelectedUniversity?.id, persistedState.selectedUniversityId, safeUniversities]);
+    const fullUniversity = initialSelectedUniversity?.id === preferredId
+      ? normalizeUniversityRecord(initialSelectedUniversity)
+      : null;
+    setSelectedUniversityState((current) => {
+      if (fullUniversity?.detailsLoaded) return fullUniversity;
+      if (freshUniversity?.detailsLoaded) return freshUniversity;
+      if (current?.id === preferredId && current.detailsLoaded) return current;
+      return freshUniversity || fullUniversity || current;
+    });
+  }, [initialSelectedUniversity, persistedState.selectedUniversityId, safeUniversities]);
+
+  useEffect(() => {
+    if (!selectedUniversity?.id || selectedUniversity.detailsLoaded || !onSelectUniversity ||
+      requestedDetailsRef.current === selectedUniversity.id) return;
+    requestedDetailsRef.current = selectedUniversity.id;
+    onSelectUniversity(selectedUniversity);
+  }, [selectedUniversity, onSelectUniversity]);
 
   // Keep refs in sync for polling
   useEffect(() => {
@@ -1033,7 +1057,7 @@ export function UploadLeadsTab({
       .map(([key, value]) => ({ Attribute: key, Value: String(value) }));
 
   const buildMappedPayloadPreview = (lead: Lead): string => {
-    if (!selectedUniversity) return "";
+    if (!selectedUniversity?.detailsLoaded) return "";
 
     const apiType = selectedUniversity.api_type || "nopaperforms";
     const columnMapping = selectedUniversity.column_mapping || {};
@@ -1092,6 +1116,7 @@ export function UploadLeadsTab({
 
       entries.forEach(([key, value]) => {
         if (["leadSource", "leadMedium", "leadCampaign"].includes(key)) return;
+        if (isMappedCanonicalDuplicate(key, value, payload, payloadFields)) return;
         // A manual CSV override is already represented by the lead key. Keep
         // it when the university mapping does not contain that key (e.g.
         // CSV column -> Campus while the saved field is named campus).
@@ -1319,7 +1344,7 @@ export function UploadLeadsTab({
 
   const handleFileUploadEvent = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !selectedUniversity) return;
+    if (!file || !selectedUniversity?.detailsLoaded) return;
 
     setFileName(file.name);
 
@@ -1553,7 +1578,7 @@ export function UploadLeadsTab({
   const applyColumnMappingAndProcess = useCallback(
     (mappingOverride?: Record<string, string>) => {
       const rawData = (window as any).__pendingCsvData;
-      if (!rawData || !selectedUniversity) {
+      if (!rawData || !selectedUniversity?.detailsLoaded) {
         setShowColumnMapping(false);
         setAlert({ type: "error", message: "The CSV preview expired. Please upload the file again." });
         return;
@@ -1798,7 +1823,7 @@ export function UploadLeadsTab({
   };
 
   const createBatch = async (status: string = "processing") => {
-    if (!selectedUniversity) return null;
+    if (!selectedUniversity?.detailsLoaded) return null;
 
     // Don't save CSV data to reduce storage usage
     const { data, error } = await supabase
@@ -1825,7 +1850,7 @@ export function UploadLeadsTab({
   // Frontend-driven processing. Lead payloads are not stored in public.leads;
   // only the batch history, counters, and aggregate statistics are persisted.
   const startBackgroundProcessing = async () => {
-    if (!selectedUniversity || leads.length === 0) return;
+    if (!selectedUniversity?.detailsLoaded || leads.length === 0) return;
 
     processingRef.current = true;
     const runId = ++activeRunIdRef.current;
@@ -1949,7 +1974,12 @@ export function UploadLeadsTab({
   // Scheduling would require storing lead payloads until the scheduled time.
   // Lead Push is configured as no-lead-storage, so scheduled pushes are blocked.
   const scheduleProcessing = async (scheduledAt: Date) => {
-    if (!selectedUniversity || leads.length === 0) return;
+    if (!selectedUniversity?.detailsLoaded || leads.length === 0) {
+      if (selectedUniversity && !selectedUniversity.detailsLoaded) {
+        setAlert({ type: "error", message: "University settings are still loading. Please try again." });
+      }
+      return;
+    }
 
     setIsScheduling(true);
     try {
@@ -2118,7 +2148,12 @@ export function UploadLeadsTab({
   };
 
   const processLeads = useCallback(async () => {
-    if (!selectedUniversity || leads.length === 0) return;
+    if (!selectedUniversity?.detailsLoaded || leads.length === 0) {
+      if (selectedUniversity && !selectedUniversity.detailsLoaded) {
+        setAlert({ type: "error", message: "University settings are still loading. Please try again." });
+      }
+      return;
+    }
 
     if (!sourceLabel.trim()) {
       setAlert({
@@ -2411,7 +2446,7 @@ export function UploadLeadsTab({
                 {!hasLoadedLeads ? (
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={!selectedUniversity}
+                    disabled={!selectedUniversity?.detailsLoaded}
                     className="btn-primary flex min-h-12 w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                   >
                     <Upload className="h-5 w-5" />
@@ -2420,7 +2455,7 @@ export function UploadLeadsTab({
                 ) : !isProcessing ? (
                   <button
                     onClick={processLeads}
-                    disabled={hasValidationErrors || leads.length === 0 || isAllProcessed}
+                    disabled={!selectedUniversity?.detailsLoaded || hasValidationErrors || leads.length === 0 || isAllProcessed}
                     className="btn-success flex min-h-12 w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                   >
                     <Rocket className="h-5 w-5" />
@@ -2462,7 +2497,7 @@ export function UploadLeadsTab({
                   {!isProcessing ? (
                     <button
                       onClick={processLeads}
-                      disabled={hasValidationErrors || leads.length === 0 || isAllProcessed}
+                      disabled={!selectedUniversity?.detailsLoaded || hasValidationErrors || leads.length === 0 || isAllProcessed}
                       className="btn-success flex min-h-12 w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                     >
                       <Rocket className="h-5 w-5" />
@@ -2560,6 +2595,9 @@ export function UploadLeadsTab({
                 </option>
               ))}
             </select>
+            {selectedUniversity && !selectedUniversity.detailsLoaded && (
+              <p className="mt-2 text-sm text-muted-foreground">Loading university settings before upload...</p>
+            )}
           </div>
 
           {/* File Upload & Single Lead Options */}
@@ -2569,6 +2607,7 @@ export function UploadLeadsTab({
                 <h3 className="font-medium text-foreground">Upload Leads CSV</h3>
                 <button
                   onClick={() => setShowSingleLeadForm(true)}
+                  disabled={!selectedUniversity.detailsLoaded}
                   className="flex items-center gap-2 text-sm text-primary hover:underline"
                 >
                   <Plus className="h-4 w-4" />
@@ -2576,8 +2615,8 @@ export function UploadLeadsTab({
                 </button>
               </div>
               <div
-                className={`upload-zone ${isProcessing ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-                onClick={() => !isProcessing && fileInputRef.current?.click()}
+                className={`upload-zone ${isProcessing || !selectedUniversity.detailsLoaded ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                onClick={() => !isProcessing && selectedUniversity.detailsLoaded && fileInputRef.current?.click()}
               >
                 <Upload className="mx-auto h-10 w-10 text-primary mb-3" />
                 {fileName ? (
@@ -2603,7 +2642,7 @@ export function UploadLeadsTab({
                 accept=".csv"
                 onChange={handleFileUploadEvent}
                 className="hidden"
-                disabled={isProcessing}
+                disabled={isProcessing || !selectedUniversity.detailsLoaded}
               />
             </div>
           )}
@@ -2627,7 +2666,7 @@ export function UploadLeadsTab({
                 {!isProcessing ? (
                   <button
                     onClick={processLeads}
-                    disabled={hasValidationErrors || leads.length === 0 || processedDisplayCount === leads.length}
+                    disabled={!selectedUniversity?.detailsLoaded || hasValidationErrors || leads.length === 0 || processedDisplayCount === leads.length}
                     className="btn-success flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Rocket className="h-5 w-5" />
@@ -2771,7 +2810,7 @@ export function UploadLeadsTab({
                   </div>
                   <button
                     onClick={processLeads}
-                    disabled={hasValidationErrors || leads.length === 0}
+                    disabled={!selectedUniversity?.detailsLoaded || hasValidationErrors || leads.length === 0}
                     className="btn-success flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Rocket className="h-5 w-5" />

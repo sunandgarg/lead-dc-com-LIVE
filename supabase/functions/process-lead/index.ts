@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isMappedCanonicalDuplicate } from "../_shared/canonicalPayload.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -821,6 +822,7 @@ function buildPayload(leadData: Record<string, string>, apiConfig: LeadPayload["
     });
     Object.entries(leadDataWithDefaults).forEach(([key, value]) => {
       if (value && !["leadSource", "leadMedium", "leadCampaign"].includes(key)) {
+        if (isMappedCanonicalDuplicate(key, value, formPayload, payloadFields)) return;
         // Preserve a manual CSV target even when it is not present as a key in
         // the university's saved mapping (for example, Campus vs campus).
         const normalizedKey = key.trim().toLowerCase();
