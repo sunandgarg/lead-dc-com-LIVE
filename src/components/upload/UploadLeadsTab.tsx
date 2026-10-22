@@ -1340,7 +1340,7 @@ export function UploadLeadsTab({
         setCsvData(text);
 
         const isUpgradCsv = (selectedUniversity.api_type || "") === "upgrad";
-        const { data, headers } = parseCSV(text, { preserveHeaders: isUpgradCsv });
+        const { data, headers } = parseCSV(text, { preserveHeaders: true });
       setCsvHeaders(headers);
 
       if (headers.length === 0 || data.length === 0) {
@@ -1517,7 +1517,8 @@ export function UploadLeadsTab({
             initialMapping[header] = autoField;
             usedFields.add(autoField);
           } else {
-            initialMapping[header] = "";
+            initialMapping[header] = usedFields.has(header) ? "" : header;
+            if (initialMapping[header]) usedFields.add(header);
           }
         }
       });
@@ -3088,6 +3089,12 @@ export function UploadLeadsTab({
                 // same key more than once. De-duplicate them to prevent unstable
                 // React option rendering inside the mapping modal.
                 const allOptions = [...new Map([...standardOptions, ...customColOptions].map((opt) => [opt.value, opt])).values()];
+                const optionValues = new Set(allOptions.map((option) => option.value));
+                if (!optionValues.has(header)) allOptions.push({ value: header, label: `${header} (CSV column)` });
+                const selectedValue = localColumnMapping[header];
+                if (selectedValue && !optionValues.has(selectedValue) && selectedValue !== header) {
+                  allOptions.push({ value: selectedValue, label: selectedValue });
+                }
 
                 return (
                   <div key={header} className="flex items-center gap-4">
@@ -3098,7 +3105,19 @@ export function UploadLeadsTab({
                     {/* ✅ Bound to localColumnMapping - changes reflect instantly */}
                     <select
                       value={localColumnMapping[header] || ""}
-                      onChange={(e) => setLocalColumnMapping((prev) => ({ ...prev, [header]: e.target.value }))}
+                      onChange={(e) => {
+                        if (e.target.value !== "__add_new__") {
+                          setLocalColumnMapping((prev) => ({ ...prev, [header]: e.target.value }));
+                          return;
+                        }
+                        const fieldName = window.prompt("Enter the new API field name:")?.trim();
+                        if (!fieldName) return;
+                        if (usedByOthers.has(fieldName)) {
+                          setAlert({ type: "error", message: `${fieldName} is already mapped to another CSV column.` });
+                          return;
+                        }
+                        setLocalColumnMapping((prev) => ({ ...prev, [header]: fieldName }));
+                      }}
                       className="flex-1 input-field text-sm"
                     >
                       <option value="">-- Skip this column --</option>
@@ -3111,6 +3130,7 @@ export function UploadLeadsTab({
                           </option>
                         );
                       })}
+                      <option value="__add_new__">+ Add new field name...</option>
                     </select>
                   </div>
                 );
