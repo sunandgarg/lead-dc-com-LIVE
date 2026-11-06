@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isProfileCreatedResponse } from "../_shared/profileCreatedResponse.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -139,6 +140,7 @@ function categorizeResponse(httpStatus: number, responseBody: string, isHttpOk: 
     rs.includes("phone already") || rs.includes("contact already");
 
   if (httpStatus === 409 || isDuplicate) return "Duplicate";
+  if (isHttpOk && isProfileCreatedResponse(responseBody)) return "Success";
 
   if (isHttpOk) {
     try {

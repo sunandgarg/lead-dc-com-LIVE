@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { isProfileCreatedResponse } from "../_shared/profileCreatedResponse.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -251,7 +252,9 @@ serve(async (req) => {
       const jsonResponse = JSON.parse(responseBody);
       
       // Check if the response indicates a configuration error vs data error
-      if (jsonResponse.message?.toLowerCase().includes('college id') ||
+      if (apiResponse.ok && isProfileCreatedResponse(responseBody)) {
+        isConfigValid = true;
+      } else if (jsonResponse.message?.toLowerCase().includes('college id') ||
           jsonResponse.message?.toLowerCase().includes('secret') ||
           jsonResponse.message?.toLowerCase().includes('authentication') ||
           jsonResponse.message?.toLowerCase().includes('unauthorized') ||
@@ -285,8 +288,8 @@ serve(async (req) => {
         errorMessage = 'Unknown response format';
       }
     } catch {
-      isConfigValid = false;
-      errorMessage = 'Invalid JSON response from API';
+      isConfigValid = apiResponse.ok && isProfileCreatedResponse(responseBody);
+      errorMessage = isConfigValid ? '' : 'Invalid JSON response from API';
     }
 
     return new Response(
