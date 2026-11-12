@@ -18,6 +18,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { ImportConfigZone, UniversityExport } from "./UniversityImportExport";
 import { MultiPushDefaultsEditor } from "./MultiPushDefaultsEditor";
+import { CustomHeadersEditor } from "./CustomHeadersEditor";
 import {
   UpgradConfigSection,
   DEFAULT_UPGRAD_CONFIG,
@@ -229,6 +230,10 @@ export const AddUniversityModal = forwardRef<HTMLDivElement, AddUniversityModalP
           apiType: formData.apiType,
           apiTimeoutSeconds: formData.apiTimeoutSeconds,
           columnMapping,
+          authType: formData.authType,
+          authHeaderKey: formData.authHeaderKey,
+          authHeaderValue: formData.authHeaderValue,
+          customHeaders: formData.customHeaders,
         },
       });
 
@@ -800,6 +805,11 @@ export const AddUniversityModal = forwardRef<HTMLDivElement, AddUniversityModalP
               </div>
             </section>
           )}
+
+          <CustomHeadersEditor
+            headers={formData.customHeaders}
+            onChange={(customHeaders) => setFormData((previous) => ({ ...previous, customHeaders }))}
+          />
 
           {formData.apiType === "upgrad" && (
             <UpgradConfigSection

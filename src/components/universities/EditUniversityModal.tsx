@@ -17,6 +17,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { UniversityImportExport } from "./UniversityImportExport";
 import { MultiPushDefaultsEditor } from "./MultiPushDefaultsEditor";
+import { CustomHeadersEditor } from "./CustomHeadersEditor";
 import {
   UpgradConfigSection,
   DEFAULT_UPGRAD_CONFIG,
@@ -261,6 +262,10 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
           apiType: formData.apiType,
           apiTimeoutSeconds: formData.apiTimeoutSeconds,
           columnMapping,
+          authType: formData.authType,
+          authHeaderKey: formData.authHeaderKey,
+          authHeaderValue: formData.authHeaderValue,
+          customHeaders: formData.customHeaders,
         },
       });
 
@@ -712,6 +717,11 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
             </section>
           )}
 
+          <CustomHeadersEditor
+            headers={formData.customHeaders}
+            onChange={(customHeaders) => setFormData((previous) => ({ ...previous, customHeaders }))}
+          />
+
           {formData.apiType === "upgrad" && (
             <UpgradConfigSection
               config={upgradConfig}
@@ -771,7 +781,7 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
                   disabled={
                     isTestingApi ||
                     !formData.apiUrl ||
-                    !formData.secretKey ||
+                    (!formData.secretKey && formData.apiType !== "custom") ||
                     (formData.apiType !== "custom" && !formData.collegeId)
                   }
                   className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"

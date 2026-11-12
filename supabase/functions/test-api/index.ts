@@ -16,6 +16,10 @@ interface TestPayload {
   apiType: string;
   columnMapping?: Record<string, string>;
   apiTimeoutSeconds?: number;
+  authType?: string;
+  authHeaderKey?: string;
+  authHeaderValue?: string;
+  customHeaders?: Record<string, string>;
 }
 
 function parseJsonLike<T>(value: unknown, fallback: T): T {
@@ -164,6 +168,15 @@ serve(async (req) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+
+    if (apiConfig.authType === 'bearer' && apiConfig.authHeaderValue) {
+      headers.Authorization = `Bearer ${apiConfig.authHeaderValue}`;
+    } else if (apiConfig.authType === 'custom_header' && apiConfig.authHeaderKey && apiConfig.authHeaderValue) {
+      headers[apiConfig.authHeaderKey] = apiConfig.authHeaderValue;
+    }
+    Object.entries(normalizeStringRecord(apiConfig.customHeaders)).forEach(([key, value]) => {
+      if (key && value) headers[key] = value;
+    });
 
     if (apiConfig.apiType === 'upgrad') {
       const sk = (apiConfig.secretKey || '').trim();
