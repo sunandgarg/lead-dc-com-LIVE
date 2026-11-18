@@ -292,15 +292,15 @@ const Index = () => {
     return withSlug;
   }, []);
 
-  const fetchUniversityDetails = useCallback(async (id: string) => {
+  const fetchUniversityDetails = useCallback(async (id: string, force = false) => {
     const current = universities.find((university) => university.id === id);
     const selected = selectedUploadUniversity?.id === id ? selectedUploadUniversity : null;
-    if (hasUniversityDetails(current)) return current;
-    if (hasUniversityDetails(selected)) return selected;
+    if (!force && hasUniversityDetails(current)) return current;
+    if (!force && hasUniversityDetails(selected)) return selected;
 
     const { data, error } = await supabase
       .from('universities')
-      .select(UNIVERSITY_DETAIL_COLUMNS)
+      .select(force ? '*' : UNIVERSITY_DETAIL_COLUMNS)
       .eq('id', id)
       .single();
 
@@ -500,7 +500,7 @@ const Index = () => {
 
   const handleEditUniversity = useCallback(async (uni: any) => {
     try {
-      uni = hasUniversityDetails(uni) ? uni : await fetchUniversityDetails(uni.id);
+      uni = await fetchUniversityDetails(uni.id, true);
     } catch (error) {
       console.error('Error loading university details:', error);
       toast({ title: 'Error', description: 'Failed to load university details', variant: 'destructive' });
@@ -535,6 +535,7 @@ const Index = () => {
       courseSpecializations: uni.courseSpecializations || [],
       columnMapping: uni.column_mapping || {},
       sampleCsvContent: uni.sample_csv_content || '',
+      defaultValues: uni.default_values || {},
     });
     navigate(`/lead-push/universities/edit/${uni.slug || uni.id}`);
     setIsEditModalOpen(true);
@@ -548,7 +549,7 @@ const Index = () => {
 
   const handleSaveEdit = async (formData: UniversityEditData) => {
     try {
-      const { error } = await supabase
+      const { data: savedUniversity, error } = await supabase
         .from('universities')
         .update({
           name: formData.name,
@@ -574,41 +575,55 @@ const Index = () => {
           auth_header_value: formData.authHeaderValue || null,
           payload_wrapper: formData.payloadWrapper || 'object',
           custom_headers: formData.customHeaders || {},
+          default_values: formData.defaultValues || {},
         })
-        .eq('id', formData.id);
+        .eq('id', formData.id)
+        .select()
+        .single();
 
       if (error) throw error;
 
-      await Promise.all([
+      const relatedDeletes = await Promise.all([
         supabase.from('programs').delete().eq('university_id', formData.id),
         supabase.from('state_cities').delete().eq('university_id', formData.id),
         supabase.from('course_specializations').delete().eq('university_id', formData.id),
       ]);
+      relatedDeletes.forEach(({ error }) => { if (error) throw error; });
 
       if (formData.programs.length > 0) {
-        await supabase.from('programs').insert(
+        const { error } = await supabase.from('programs').insert(
           formData.programs.map(name => ({ university_id: formData.id, name }))
         );
+        if (error) throw error;
       }
       if (formData.stateCities.length > 0) {
-        await supabase.from('state_cities').insert(
+        const { error } = await supabase.from('state_cities').insert(
           formData.stateCities.map(sc => ({ university_id: formData.id, state: sc.state, city: sc.city }))
         );
+        if (error) throw error;
       }
       if (formData.courseSpecializations.length > 0) {
-        await supabase.from('course_specializations').insert(
+        const { error } = await supabase.from('course_specializations').insert(
           formData.courseSpecializations.map(cs => ({ university_id: formData.id, course: cs.course, specialization: cs.specialization }))
         );
+        if (error) throw error;
       }
 
       // Refresh before closing so the active upload view receives the exact
       // saved timeout/concurrency rather than a stale cached university row.
       await fetchUniversities();
+      mergeUniversityInState({
+        ...savedUniversity,
+        programs: formData.programs,
+        stateCities: formData.stateCities,
+        courseSpecializations: formData.courseSpecializations,
+      });
       toast({ title: 'Success', description: 'University updated successfully!' });
       closeEditModal();
     } catch (error) {
       console.error('Error updating university:', error);
       toast({ title: 'Error', description: 'Failed to update university', variant: 'destructive' });
+      throw error;
     }
   };
 

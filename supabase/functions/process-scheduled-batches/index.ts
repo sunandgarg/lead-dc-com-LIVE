@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { isProfileCreatedResponse } from "../_shared/profileCreatedResponse.ts";
+import { normalizeAmityExternalPartnerPayload } from "../_shared/amityExternalPartner.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -401,6 +402,7 @@ async function processOneLead(
     }
 
     payload = normalizeCustomUiPublisherPayload(payload, apiConfig.apiUrl);
+    payload = normalizeAmityExternalPartnerPayload(payload, apiConfig.apiUrl);
     const finalPayload = apiConfig.payloadWrapper === "array" && !Array.isArray(payload) ? [payload] : payload;
 
     const controller = new AbortController();

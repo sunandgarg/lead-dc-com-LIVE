@@ -35,6 +35,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useUploadStatePersistence } from "@/hooks/useUploadStatePersistence";
 import { appCache } from "@/hooks/useAppCache";
 import { isMappedCanonicalDuplicate } from "../../../supabase/functions/_shared/canonicalPayload";
+import { normalizeAmityExternalPartnerPayload } from "../../../supabase/functions/_shared/amityExternalPartner";
 
 interface CustomColumn {
   columnKey: string;
@@ -156,6 +157,7 @@ interface University {
   auth_header_key?: string;
   auth_header_value?: string;
   custom_headers?: Record<string, string>;
+  default_values?: Record<string, string>;
 }
 
 function parseJsonLike<T>(value: unknown, fallback: T): T {
@@ -337,6 +339,7 @@ function normalizeUniversityRecord(raw: any): University {
     auth_header_key: String(raw?.auth_header_key ?? ""),
     auth_header_value: String(raw?.auth_header_value ?? ""),
     custom_headers: normalizeKeyValueRecord(raw?.custom_headers),
+    default_values: normalizeKeyValueRecord(raw?.default_values),
   } as University;
 }
 
@@ -1058,6 +1061,10 @@ export function UploadLeadsTab({
 
   const buildMappedPayloadPreview = (lead: Lead): string => {
     if (!selectedUniversity?.detailsLoaded) return "";
+    lead = { ...lead };
+    Object.entries(selectedUniversity.default_values || {}).forEach(([key, value]) => {
+      if (!lead[key]?.trim()) lead[key] = value;
+    });
 
     const apiType = selectedUniversity.api_type || "nopaperforms";
     const columnMapping = selectedUniversity.column_mapping || {};
@@ -1147,7 +1154,7 @@ export function UploadLeadsTab({
         return JSON.stringify(buildLeadSquaredAttributePayload(payload), null, 2);
       }
 
-      const normalizedPayload = normalizeCustomUiPublisherPayload(payload);
+      const normalizedPayload = normalizeAmityExternalPartnerPayload(normalizeCustomUiPublisherPayload(payload), selectedUniversity.api_url);
       const finalPayload = selectedUniversity.payload_wrapper === "array" ? [normalizedPayload] : normalizedPayload;
       return JSON.stringify(finalPayload, null, 2);
     }
@@ -1321,7 +1328,7 @@ export function UploadLeadsTab({
       });
     }
 
-    const normalizedPayload = normalizeCustomUiPublisherPayload(payload);
+    const normalizedPayload = normalizeAmityExternalPartnerPayload(normalizeCustomUiPublisherPayload(payload), selectedUniversity.api_url);
     const finalPayload = selectedUniversity.payload_wrapper === "array" ? [normalizedPayload] : normalizedPayload;
     return JSON.stringify(finalPayload, null, 2);
   };
@@ -1596,7 +1603,7 @@ export function UploadLeadsTab({
         return;
       }
 
-      const fixedDefaults: Record<string, string> = {};
+      const fixedDefaults: Record<string, string> = { ...selectedUniversity.default_values };
       Object.entries(selectedUniversity.column_mapping || {}).forEach(([key, value]) => {
         if (key.startsWith("__fixed_") && value) {
           fixedDefaults[key.replace("__fixed_", "")] = value;
@@ -2038,7 +2045,7 @@ export function UploadLeadsTab({
       customHeaders: selectedUniversity.custom_headers || {},
       apiTimeoutSeconds:
         clampUniversityNumber(selectedUniversity.api_timeout_seconds, 30, 5, 300),
-      universityDefaults: {},
+      universityDefaults: selectedUniversity.default_values || {},
     };
   }, [selectedUniversity, tempColumnMapping]);
 

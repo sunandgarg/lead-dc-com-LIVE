@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { isMappedCanonicalDuplicate } from "../_shared/canonicalPayload.ts";
 import { isProfileCreatedResponse } from "../_shared/profileCreatedResponse.ts";
+import { normalizeAmityExternalPartnerPayload } from "../_shared/amityExternalPartner.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -912,7 +913,7 @@ function buildPayload(leadData: Record<string, string>, apiConfig: LeadPayload["
     headers["Content-Type"] = "application/json";
   }
 
-  return { payload, headers };
+  return { payload: normalizeAmityExternalPartnerPayload(payload, apiConfig.apiUrl), headers };
 }
 
 Deno.serve(async (req) => {

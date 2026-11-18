@@ -66,13 +66,14 @@ export interface UniversityEditData {
   columnMapping: Record<string, string>;
   payloadFields?: PayloadField[];
   sampleCsvContent?: string;
+  defaultValues?: Record<string, string>;
 }
 
 interface EditUniversityModalProps {
   isOpen: boolean;
   university: UniversityEditData | null;
   onClose: () => void;
-  onSave: (university: UniversityEditData) => void;
+  onSave: (university: UniversityEditData) => Promise<void>;
 }
 
 const apiTypeOptions = [
@@ -118,6 +119,7 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
   const [sampleCsvContent, setSampleCsvContent] = useState<string>("");
   const [defaultValues, setDefaultValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSaving, setIsSaving] = useState(false);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [apiTestResult, setApiTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [upgradConfig, setUpgradConfig] = useState<UpgradConfig>({ ...DEFAULT_UPGRAD_CONFIG });
@@ -156,12 +158,7 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
       setCourseSpecializations(university.courseSpecializations || []);
       setSampleCsvContent(university.sampleCsvContent || "");
 
-      // Load default values from university (fetched from DB)
-      supabase.from('universities').select('default_values').eq('id', university.id).single().then(({ data }) => {
-        if (data?.default_values && typeof data.default_values === 'object') {
-          setDefaultValues(data.default_values as Record<string, string>);
-        }
-      });
+      setDefaultValues(university.defaultValues || {});
 
       if (university.payloadFields && university.payloadFields.length > 0) {
         setPayloadFields(university.payloadFields);
@@ -332,32 +329,38 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validateForm() || !university) return;
+    if (isSaving || !validateForm() || !university) return;
 
     let columnMapping = payloadFieldsToColumnMapping(payloadFields);
     if (formData.apiType === "upgrad") {
       columnMapping = applyUpgradConfig(columnMapping, upgradConfig);
     }
 
-    // Save default_values to DB directly
     const cleanDefaults = Object.fromEntries(Object.entries(defaultValues).filter(([_, v]) => v.trim()));
-    supabase.from('universities').update({ default_values: cleanDefaults }).eq('id', university.id);
 
-    onSave({
-      id: university.id,
-      ...formData,
-      dailyLeadLimit: formData.dailyLeadLimit === "" || formData.dailyLeadLimit == null ? null : Number(formData.dailyLeadLimit),
-      apiTimeoutSeconds: Number(formData.apiTimeoutSeconds) || 30,
-      defaultPushConcurrency: Number(formData.defaultPushConcurrency) || 2,
-      programs: programs.filter((p) => p.trim()),
-      stateCities,
-      courseSpecializations,
-      columnMapping,
-      payloadFields,
-      sampleCsvContent,
-    });
+    setIsSaving(true);
+    try {
+      await onSave({
+        id: university.id,
+        ...formData,
+        dailyLeadLimit: formData.dailyLeadLimit === "" || formData.dailyLeadLimit == null ? null : Number(formData.dailyLeadLimit),
+        apiTimeoutSeconds: Number(formData.apiTimeoutSeconds) || 30,
+        defaultPushConcurrency: Number(formData.defaultPushConcurrency) || 2,
+        programs: programs.filter((p) => p.trim()),
+        stateCities,
+        courseSpecializations,
+        columnMapping,
+        payloadFields,
+        sampleCsvContent,
+        defaultValues: cleanDefaults,
+      });
+    } catch (error) {
+      setErrors((previous) => ({ ...previous, submit: error instanceof Error ? error.message : "Failed to save university. Please try again." }));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!isOpen || !university) return null;
@@ -1077,6 +1080,7 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 border-t border-border p-6">
+          {errors.submit && <p role="alert" className="text-sm text-destructive">{errors.submit}</p>}
           <button
             type="button"
             onClick={onClose}
@@ -1084,9 +1088,9 @@ export function EditUniversityModal({ isOpen, university, onClose, onSave }: Edi
           >
             Cancel
           </button>
-          <button onClick={handleSubmit} className="btn-primary flex items-center gap-2">
+          <button onClick={handleSubmit} disabled={isSaving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
             <Save className="h-4 w-4" />
-            Save Changes
+            {isSaving ? "Saving..." : "Save Changes"}
           </button>
         </div>
       </div>
